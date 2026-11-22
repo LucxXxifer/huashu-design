@@ -1,0 +1,6 @@
+{
+  "scope": "fixture",
+  "kind": "selection",
+  "direction": "B",
+  "evidence": {"source": "fixture", "turn": "fixture:git-desk-export", "quote": "Choose direction B"}
+}

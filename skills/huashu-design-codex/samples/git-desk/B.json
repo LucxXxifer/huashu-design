@@ -1,0 +1,1 @@
+{"file":"B.html","steps":[{"expect":"#diff","text":"+Keep this second edit for later."},{"click":"#staged"},{"expect":"#diff","text":"+Stage the draft.","screenshot":true},{"expect":"#staged","attribute":"aria-pressed","equals":"true"},{"press":"#unstaged","key":"Enter"},{"expect":"#diff","text":"+Keep this second edit for later."}]}

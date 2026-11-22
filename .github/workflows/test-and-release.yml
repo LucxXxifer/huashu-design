@@ -1,0 +1,64 @@
+name: Test and package Codex edition
+
+on:
+  push:
+    branches: [codex/**]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: huashu-codex-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-release:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24.22.3'
+
+      - name: Install the locked test dependencies
+        working-directory: codex
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install FFmpeg and Poppler
+        run: |
+          brew install ffmpeg poppler
+
+      - name: Run adapter and actual-output tests
+        working-directory: codex
+        run: npm test
+        env:
+          HUASHU_NODE_MODULES: ${{ github.workspace }}/codex/node_modules
+
+      - name: Build the allowlisted distributable
+        run: python3 scripts/build-release-archive.py "$GITHUB_WORKSPACE" "$RUNNER_TEMP/huashu-dist"
+
+      - name: Verify the exact package files and checksum
+        run: |
+          cd "$RUNNER_TEMP/huashu-dist"
+          shasum -a 256 -c SHA256SUMS
+          python3 "$GITHUB_WORKSPACE/scripts/verify-release-archive.py" huashu-design-codex.zip PACKAGE-MANIFEST.json
+
+      - name: Upload versioned result
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: huashu-design-codex-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/huashu-dist/huashu-design-codex.zip
+            ${{ runner.temp }}/huashu-dist/SHA256SUMS
+            ${{ runner.temp }}/huashu-dist/PACKAGE-MANIFEST.json
+          if-no-files-found: error
+          retention-days: 30

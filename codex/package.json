@@ -1,0 +1,20 @@
+{
+  "name": "huashu-design-codex-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated, reproducible Codex adapter acceptance tests",
+  "scripts": {
+    "test": "node --test --test-timeout=210000 tests/media.test.cjs tests/release-archive.test.cjs tests/web.test.cjs"
+  },
+  "devDependencies": {
+    "jszip": "3.10.1",
+    "playwright": "1.62.1",
+    "pptxgenjs": "4.0.1",
+    "sharp": "0.35.5",
+    "xml-js": "1.6.11",
+    "pdf-lib": "1.17.1"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  }
+}

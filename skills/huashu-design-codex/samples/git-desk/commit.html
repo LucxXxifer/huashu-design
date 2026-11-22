@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#172923">
+<title>Commit the staged version | Git Field Notes</title>
+<style>
+:root{color-scheme:light;--ink:#172923;--paper:#f5f3e9;--line:#a4b1a3;--moss:#dfeab0;--rust:#8c382a;--green:#37582c}*{box-sizing:border-box}body{margin:0;background:var(--ink);color:var(--paper);font:16px/1.55 Arial,sans-serif}.app{width:min(100%,1120px);margin:auto;min-height:100svh;display:flex;flex-direction:column}header{min-height:88px;padding:16px 28px;border-bottom:1px solid #66786b;display:flex;align-items:center;gap:15px}header img{width:53px;height:42px;padding:3px;background:var(--paper);border-radius:3px}header span,footer{font:700 12px/1.5 ui-monospace,monospace;color:#d1ded1}main{padding:34px 28px 38px;flex:1}.intro{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(200px,.7fr);gap:24px;align-items:end}h1{margin:8px 0 12px;font:400 54px/1.04 Georgia,serif;overflow-wrap:anywhere}.eyebrow,.label{font:700 12px/1.5 ui-monospace,monospace;color:#bed38f;letter-spacing:0}#phase{display:inline-block;padding:4px 8px;border-left:3px solid #bed38f;background:#314438;color:#eff3e5;font:700 12px/1.55 ui-monospace,monospace}.intro p{max-width:35ch;margin:0 0 7px;color:#e3e8db}.areas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:27px;border:1px solid #829181}.area{min-width:0;padding:18px 17px;background:var(--paper);color:var(--ink);border-right:1px solid var(--line)}.area:last-child{border:0}.area p{margin:7px 0 0;overflow-wrap:anywhere}.area h2{margin:4px 0;font:700 18px/1.2 Arial,sans-serif}.diffs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin-top:20px}.diff{min-width:0;padding:15px 16px;border-top:2px solid #8e9d8d;background:#263b32}.diff pre{min-height:67px;margin:9px 0 0;overflow-wrap:anywhere;white-space:pre-wrap;font:13px/1.55 ui-monospace,monospace}.removed{color:#e7a897}.added{color:#cae59a}.controls{margin-top:20px;display:flex;flex-wrap:wrap;align-items:center;gap:12px}button{min-height:46px;padding:9px 16px;border:1px solid #293b2c;border-radius:4px;background:var(--moss);color:var(--ink);font:700 15px/1.4 Arial,sans-serif;cursor:pointer}button:hover{background:#edf3d8}button:focus-visible{outline:3px solid #e1a18c;outline-offset:3px}button:disabled{cursor:default;opacity:.72}#feedback{min-height:25px;margin:0;color:#e3e8db;overflow-wrap:anywhere}.receipt{margin-top:22px;padding:15px 17px;border-left:3px solid #bed38f;background:#20362d;overflow-wrap:anywhere}.receipt p{margin:5px 0 0}footer{padding:16px 28px 20px;border-top:1px solid #66786b}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:650px){header{min-height:72px;padding:12px 18px}main{padding:25px 18px 30px}.intro{grid-template-columns:minmax(0,1fr);gap:8px}h1{font-size:42px}.areas{grid-template-columns:minmax(0,1fr);margin-top:20px}.area{padding:12px 14px;border-right:0;border-bottom:1px solid var(--line)}.area:last-child{border:0}.area h2{display:block;margin:0 0 4px}.area p{display:block;margin:0}.diffs{grid-template-columns:minmax(0,1fr);gap:10px}.diff{padding:12px 13px}.diff pre{min-height:0;margin-top:6px}.controls{align-items:flex-start;flex-direction:column;gap:8px}footer{padding-inline:18px}}
+</style>
+<div class="app">
+  <header><img src="assets/git-logo.svg" alt="Git"><span>FIELD NOTES / SAFE COMMIT</span></header>
+  <main>
+    <section class="intro">
+      <div><span class="eyebrow">ONE FILE / THREE VERSIONS</span><h1>Commit only what you staged.</h1><span id="phase" role="status">Reading repository…</span></div>
+      <p>The working file has a later edit. Create a real Git commit from the index, then verify the later edit stays on disk.</p>
+    </section>
+    <section class="areas" aria-label="Git file versions">
+      <article class="area"><span class="label">01 / DISK</span><h2>Working tree</h2><p id="working"></p></article>
+      <article class="area"><span class="label">02 / NEXT COMMIT</span><h2>Staging area</h2><p id="stage"></p></article>
+      <article class="area"><span class="label">03 / SAVED</span><h2>HEAD</h2><p id="head"></p></article>
+    </section>
+    <section class="diffs" aria-label="Git changes">
+      <div class="diff"><span class="label">LAST COMMIT TO INDEX / STAGED</span><pre id="staged-diff"></pre></div>
+      <div class="diff"><span class="label">INDEX TO DISK / UNSTAGED</span><pre id="working-diff"></pre></div>
+    </section>
+    <div class="controls"><button id="commit" type="button" disabled>Commit staged</button><p id="feedback" aria-live="polite"></p></div>
+    <section class="receipt" id="receipt" hidden><span class="label">NEW COMMIT / VERIFIED</span><p>Commit <code id="commit-hash"></code> · <span id="commit-subject"></span></p><p id="post-status"></p></section>
+  </main>
+  <footer>Disposable local teaching repository · Git logo by Jason Long, CC BY 3.0.</footer>
+</div>
+<script>
+const COMMIT_TOKEN = "";
+const el = id => document.getElementById(id);
+function showDiff(target, value, empty) {
+  const lines = value.split('\n').filter(line => /^[+-][^+-]/.test(line));
+  if (!lines.length) { el(target).textContent = empty; return; }
+  el(target).replaceChildren(...lines.flatMap((line, index) => {
+    const row = document.createElement('span');
+    row.className = line.startsWith('+') ? 'added' : 'removed';
+    row.textContent = line;
+    return index === 0 ? [row] : ['\n', row];
+  }));
+}
+function render(state) {
+  el('working').textContent = state.working;
+  el('stage').textContent = state.stage;
+  el('head').textContent = state.head;
+  el('phase').textContent = state.committed ? 'After commit' : 'Before commit';
+  showDiff('staged-diff', state.stagedDiff, 'No staged changes.');
+  showDiff('working-diff', state.workingDiff, 'No unstaged changes.');
+  el('commit').disabled = state.committed;
+  el('receipt').hidden = !state.committed;
+  if (state.committed) {
+    el('commit-hash').textContent = state.commitHash.slice(0, 12);
+    el('commit-subject').textContent = state.commitSubject;
+    el('post-status').textContent = `Working tree remains: ${state.gitStatus || 'clean'}`;
+  }
+}
+async function refresh() {
+  const response = await fetch('/api/state', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Could not read the disposable Git repository.');
+  render(await response.json());
+}
+el('commit').addEventListener('click', async () => {
+  el('commit').disabled = true;
+  el('feedback').textContent = 'Creating a Git commit from the staging area…';
+  try {
+    const response = await fetch('/api/commit', { method: 'POST', headers: { 'x-demo-token': COMMIT_TOKEN } });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Git commit failed.');
+    render({ ...result, committed: true });
+    el('feedback').textContent = 'Commit created. The second edit is still unstaged.';
+  } catch (error) {
+    el('feedback').textContent = error.message;
+    el('commit').disabled = false;
+  }
+});
+refresh().catch(error => { el('feedback').textContent = error.message; el('commit').disabled = true; });
+</script>
+</html>

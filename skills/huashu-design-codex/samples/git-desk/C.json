@@ -1,0 +1,1 @@
+{"file":"C.html","steps":[{"click":"#next"},{"expect":"#example","text":"Stage the draft.","screenshot":true},{"click":"#next"},{"expect":"#example","text":"Edit the field note."},{"click":"#next"},{"expect":"#example","text":"Keep this second edit for later."}]}

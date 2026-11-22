@@ -1,0 +1,1 @@
+{"file":"A.html","steps":[{"click":"#index"},{"expect":"#snapshot","text":"Stage the draft.","screenshot":true},{"click":"#commit"},{"expect":"#snapshot","text":"Edit the field note."}]}

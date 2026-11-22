@@ -1,0 +1,22 @@
+{
+  "file": "phone.html",
+  "viewports": [[375,812],[430,932]],
+  "steps": [
+    {"click":"#open-index"},
+    {"expect":"#snapshot","text":"Stage the draft.","screenshot":true},
+    {"click":"#back-detail"},
+    {"expect":"#open-index:focus","text":"Staging area"},
+    {"press":"#open-compare","key":"Enter"},
+    {"expect":"#pocket-diff","text":"+Keep this second edit for later."},
+    {"click":"#diff-stage"},
+    {"expect":"#pocket-diff","text":"+Stage the draft.","screenshot":true},
+    {"expect":"#diff-stage","attribute":"aria-pressed","equals":"true"},
+    {"click":"#larger"},
+    {"expect":"#app","attribute":"class","equals":"app large"},
+    {"reload":true},
+    {"expect":"#larger","attribute":"aria-checked","equals":"true"},
+    {"click":"#larger"},
+    {"reload":true},
+    {"expect":"#larger","attribute":"aria-checked","equals":"false"}
+  ]
+}

@@ -1,11 +1,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { Problem, dependency, check, size, localFile } = require('./runtime.cjs');
+const { localPreview, mediaTypes } = require('./html.cjs');
 
 const origin = 'https://huashu.test';
 const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const chromiums = [process.env.HUASHU_CHROMIUM, chrome, '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/opt/google/chrome/chrome'];
-const types = { '.html':'text/html; charset=utf-8', '.css':'text/css; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.mjs':'text/javascript; charset=utf-8', '.json':'application/json', '.svg':'image/svg+xml', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.webp':'image/webp', '.avif':'image/avif', '.gif':'image/gif', '.woff':'font/woff', '.woff2':'font/woff2', '.ttf':'font/ttf', '.mp3':'audio/mpeg', '.wav':'audio/wav', '.mp4':'video/mp4' };
+const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json', ...mediaTypes };
 
 async function withBrowser(fn) {
   const { chromium } = dependency('playwright');
@@ -15,15 +16,19 @@ async function withBrowser(fn) {
   try { return await fn(browser); } finally { await browser.close(); }
 }
 
-async function openPage(browser, job, file, width, height, label, seek = false) {
-  localFile(job.root, file);
+async function openPage(browser, job, file, width, height, label, seek = false, deviceScaleFactor = 1, entryHtml = null) {
+  const entry = localFile(job.root, file);
   check(path.extname(file).toLowerCase() === '.html', 'Expected an HTML entry file.');
-  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, offline: true, serviceWorkers: 'block', acceptDownloads: false, reducedMotion: seek ? 'no-preference' : 'reduce' });
+  const entryPath = path.posix.normalize(file);
+  const preview = entryHtml ?? localPreview(fs.readFileSync(entry, 'utf8'), job.root, file);
+  const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor, offline: true, serviceWorkers: 'block', acceptDownloads: false, reducedMotion: seek ? 'no-preference' : 'reduce' });
   const errors = new Set();
+  const networkErrors = new Set();
   const note = (code, message) => {
     const key = code + '\n' + message;
     if (!errors.has(key)) job.issue(code, message, { view: label });
     errors.add(key);
+    if (code === 'REMOTE_RESOURCE') networkErrors.add(key);
   };
   try {
     await context.route('**/*', async route => {
@@ -39,13 +44,14 @@ async function openPage(browser, job, file, width, height, label, seek = false) 
         relative = decodeURIComponent(url.pathname).slice(1);
         if (relative.split('/').some(part => part.startsWith('.'))) throw new Error('Hidden path');
         real = localFile(job.root, relative);
-        if (real === job.out || real.startsWith(job.out + path.sep)) throw new Error('Output path');
+        if (job.out && (real === job.out || real.startsWith(job.out + path.sep))) throw new Error('Output path');
         if (!types[path.extname(real).toLowerCase()] || fs.statSync(real).size > 40 * 1024 * 1024) throw new Error('Unsupported resource');
       } catch {
         if (relative === 'favicon.ico') return route.fulfill({ status: 204 });
         note('MISSING_RESOURCE', `Cannot serve local resource: ${relative || url.pathname}`);
         return route.fulfill({ status: 404, contentType: 'text/plain', body: 'Unavailable local resource' });
       }
+      if (preview !== null && relative === entryPath) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: preview });
       return route.fulfill({ path: real, contentType: types[path.extname(real).toLowerCase()] });
     });
     await context.routeWebSocket('**/*', ws => { note('REMOTE_RESOURCE', 'WebSocket blocked in local rendering.'); ws.close(); });
@@ -56,10 +62,10 @@ async function openPage(browser, job, file, width, height, label, seek = false) 
     page.on('console', message => {
       if (message.type() === 'error' && message.text() !== 'Failed to load resource: the server responded with a status of 404 (Not Found)') note('CONSOLE_ERROR', message.text().slice(0, 420));
     });
-    const url = `${origin}/${file.split('/').map(encodeURIComponent).join('/')}`;
+    const url = `${origin}/${entryPath.split('/').map(encodeURIComponent).join('/')}`;
     await page.goto(url, { waitUntil: 'load', timeout: 12000 });
     await settle(page);
-    return { page, context, errors };
+    return { page, context, errors, networkErrors };
   } catch (error) {
     await context.close();
     throw error;
@@ -69,6 +75,35 @@ async function openPage(browser, job, file, width, height, label, seek = false) 
 async function settle(page) {
   await page.waitForFunction(() => document.fonts.status === 'loaded', { timeout: 6000 });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function rendered(page) {
+  try {
+    await page.waitForFunction(() => {
+      if (!document.body || document.readyState !== 'complete' || document.fonts.status !== 'loaded') return false;
+      const visible = element => {
+        if (getComputedStyle(element).visibility !== 'visible') return false;
+        for (let node = element; node; node = node.parentElement) {
+          if (Number(getComputedStyle(node).opacity) <= .05) return false;
+        }
+        return [...element.getClientRects()].some(rect => rect.width > 0 && rect.height > 0);
+      };
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let textNode;
+      while ((textNode = walker.nextNode())) {
+        if (textNode.textContent.trim() && !textNode.parentElement.closest('script,style,template,svg defs') && visible(textNode.parentElement)) return true;
+      }
+      return [...document.querySelectorAll('img,canvas,video,svg')].some(element => visible(element) && (
+        element.tagName === 'IMG' ? element.naturalWidth > 0 :
+        element.tagName === 'VIDEO' ? element.readyState >= 2 || Boolean(element.poster) :
+        element instanceof SVGElement ? Boolean(element.querySelector('path,rect,circle,ellipse,line,polygon,polyline,use,image')) : true
+      ));
+    }, null, { timeout: 2500 });
+    return true;
+  } catch (error) {
+    if (error.name !== 'TimeoutError') throw error;
+    return false;
+  }
 }
 
 async function measure(page, minimum) {
@@ -86,15 +121,32 @@ async function measure(page, minimum) {
       const c = x / 255;
       return total + (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i];
     }, 0);
+    const designFontSize = (element, size) => {
+      if (!(element instanceof SVGGraphicsElement)) return size;
+      const matrix = element.getScreenCTM();
+      if (!matrix) return size;
+      let svg = element.ownerSVGElement;
+      while (svg?.ownerSVGElement) svg = svg.ownerSVGElement;
+      const outerScale = svg?.clientWidth ? svg.getBoundingClientRect().width / svg.clientWidth : 1;
+      return size * (Math.hypot(matrix.a, matrix.b) || 1) / (outerScale || 1);
+    };
     const small = [], low = [];
+    const devices = [];
     let contrastUnmeasured = 0;
     for (const element of document.body.querySelectorAll('*')) {
-      if (element.closest('svg,script,style,template,canvas') || !element.getClientRects().length) continue;
-      const sample = Array.from(element.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').trim();
-      if (!sample) continue;
+      if (element.closest('[data-lint-skip],script,style,template,canvas') || !element.getClientRects().length) continue;
       const style = getComputedStyle(element);
       if (style.visibility !== 'visible') continue;
-      const font = parseFloat(style.fontSize);
+      if (element instanceof HTMLElement && parseFloat(style.borderTopLeftRadius) >= 24) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width >= 160 && rect.height / rect.width >= 1.7 && rect.height / rect.width <= 2.4 &&
+            !devices.some(item => item.element.contains(element))) devices.push({ element, width: rect.width, top: rect.top });
+      }
+      const svgText = element instanceof SVGElement;
+      if (svgText && !element.matches('text,tspan,textPath')) continue;
+      const sample = Array.from(element.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').trim();
+      if (!sample) continue;
+      const font = designFontSize(element, parseFloat(style.fontSize));
       let opacity = 1;
       const layers = [];
       let complex = false, covered = false;
@@ -109,7 +161,8 @@ async function measure(page, minimum) {
       }
       if (!opacity) continue;
       const snippet = sample.slice(0, 90);
-      if (font < minFont && small.length < 12) small.push({ text: snippet, px: font });
+      if (font < minFont && small.length < 12) small.push({ text: snippet, px: Number(font.toFixed(2)) });
+      if (svgText) { contrastUnmeasured++; continue; }
       const ink = colors(style.color);
       if (complex || opacity !== 1 || !ink) { contrastUnmeasured++; continue; }
       const background = layers.reverse().reduce((paper, layer) => composite(layer, paper), [255, 255, 255]);
@@ -118,8 +171,15 @@ async function measure(page, minimum) {
       const required = font >= 24 || (font >= 18.66 && Number(style.fontWeight) >= 700) ? 3 : 4.5;
       if (ratio < required && low.length < 12) low.push({ text: snippet, ratio: Number(ratio.toFixed(2)), required });
     }
+    let deviceRow = 0;
+    if (devices.length >= 4) {
+      const medianWidth = devices.map(device => device.width).sort((a, b) => a - b)[Math.floor(devices.length / 2)];
+      const sameWidth = devices.filter(device => Math.abs(device.width - medianWidth) <= medianWidth * .04);
+      const aligned = Math.max(0, ...sameWidth.map(device => sameWidth.filter(other => other.top >= device.top && other.top - device.top <= 24).length));
+      if (aligned >= 4 && aligned >= devices.length * .6) deviceRow = aligned;
+    }
     const broken = Array.from(document.images).filter(img => img.getClientRects().length && img.complete && img.naturalWidth === 0 && (img.src || img.srcset)).map(img => img.getAttribute('src') || img.getAttribute('srcset')).slice(0, 12);
-    return { scrollWidth: width, scrollHeight: height, small, low, contrastUnmeasured, broken };
+    return { scrollWidth: width, scrollHeight: height, small, low, contrastUnmeasured, broken, deviceRow };
   }, minimum);
 }
 
@@ -142,13 +202,16 @@ async function web(job) {
       try {
         async function inspect(state, takeScreenshot) {
           await settle(page);
+          const hasContent = await rendered(page);
           const data = await measure(page, minFont);
           const detail = { view: label, state };
-          measured.states.push({ state, ...data });
+          measured.states.push({ state, rendered: hasContent, ...data });
+          if (!hasContent) issue('PAGE_EMPTY', 'No visible text or media appeared in the render window.', detail);
           if (data.scrollWidth > width + 1) issue('HORIZONTAL_OVERFLOW', `${data.scrollWidth}px exceeds ${width}px.`, detail);
           if (data.small.length) issue('SMALL_TEXT', `Text below ${minFont}px.`, detail);
           if (data.low.length) issue('LOW_CONTRAST', 'Solid text/background pairs below the minimum contrast.', detail);
           if (data.broken.length) issue('BROKEN_IMAGE', 'Visible images could not be decoded.', detail);
+          if (data.deviceRow) issue('DEVICE_ROW', 'Equal-sized phones align in one row. Check the hierarchy of the exhibition board.', { ...detail, devices: data.deviceRow }, 'warning');
           check(data.scrollHeight < 24001, 'Page exceeds the screenshot height limit; inspect it in explicit sections.', 'CAPTURE_LIMIT');
           if (takeScreenshot) publish(`${label}-${state}.png`, await page.screenshot({ fullPage: true, timeout: 12000 }));
         }
@@ -184,4 +247,4 @@ async function web(job) {
   });
 }
 
-module.exports = { web, withBrowser, openPage, settle };
+module.exports = { web, withBrowser, openPage, settle, rendered };

@@ -3,13 +3,13 @@ const path = require('node:path');
 const { Problem } = require('./runtime.cjs');
 
 const statuses = { passed: 0, failed: 1, skipped: 2, partial: 3 };
-const commands = { web: 'browser', deck: 'deck', video: 'video', images: 'images', gate: 'gate' };
+const commands = { web: 'browser', deck: 'deck', video: 'video', images: 'images', mini: 'mini', offline: 'offline', gate: 'gate' };
 
 async function main() {
   const [command, input, output, ...options] = process.argv.slice(2);
   if (!Object.hasOwn(commands, command) || !input || !output ||
       (options.length && !(command === 'gate' && options.length === 1 && options[0] === '--fixture'))) {
-    console.error('Usage: node huashu.cjs <web|deck|video|images|gate> <job.json> <new-output-dir> [--fixture for gate only]');
+    console.error('Usage: node huashu.cjs <web|deck|video|images|mini|offline|gate> <job.json> <new-output-dir> [--fixture for gate only]');
     return 1;
   }
   const deadline = setTimeout(() => { console.error('TIMEOUT: Huashu verification exceeded 180 seconds.'); process.exit(124); }, 180000);
@@ -27,7 +27,10 @@ async function main() {
     if (severity === 'error' && report.status === 'passed') report.status = 'failed';
   };
   const publish = (name, bytes) => {
-    fs.writeFileSync(path.join(out, name), bytes, { flag: 'wx' });
+    const target = path.resolve(out, name);
+    if (target !== out && !target.startsWith(out + path.sep)) throw new Problem('OUTPUT_PATH', `Output escapes its result directory: ${name}`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, bytes, { flag: 'wx' });
     report.artifacts.push(name);
   };
   try {

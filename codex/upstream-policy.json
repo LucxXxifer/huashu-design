@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "baseline": {"tag": "v3.5.0", "commit": "937113133ae446a69ea19d4ceed6cbd2ed3c7735"},
+  "shared_jsx": {
+    "assets/ios_frame.jsx": "iOS frame, screenBg and device chrome",
+    "assets/showboard.jsx": "Exhibition board and layout modes",
+    "assets/wechat_frame.jsx": "WeChat frame, interactions and data-mp-* contract"
+  },
+  "python_replacements": {
+    "scripts/_pyenv.py": "Use the dedicated Node 24 runtime. WorkBuddy Python stays in WorkBuddy.",
+    "scripts/_ready.py": "browser.cjs and html.cjs handle local dependencies and render readiness.",
+    "scripts/appstore_render.py": "web and images render and verify store images.",
+    "scripts/build_specimens.py": "Use the pinned upstream specimen library as design reference.",
+    "scripts/capabilities.py": "Use the current host's available tools and the local runtime dependency report.",
+    "scripts/design_lint.py": "web checks layout, text and device chrome. Design comparison is visual.",
+    "scripts/fetch_images.py": "Use available search and approved local image files with provenance.",
+    "scripts/mp_handoff.py": "mini and references/miniprogram.md provide the WeChat handoff.",
+    "scripts/offline.py": "offline inlines local assets and precompiles JSX with a pinned Babel runtime.",
+    "scripts/polish.py": "Use actual viewport screenshots and review rounds in references/workflow.md.",
+    "scripts/ref_board.py": "Use the pinned specimen library and the six-card workflow.",
+    "scripts/verify.py": "Use the web, mini, offline and deck checks.",
+    "scripts/xhs_render.py": "Use the images and web checks with the upstream Xiaohongshu reference."
+  },
+  "review_notes": {
+    "LICENSE": "Recheck distribution rights and bundled notices.",
+    "SKILL.md": "Update the Codex entry and its capability routing for substantive instruction changes.",
+    "package.json": "Compare runtime commands and dependencies with codex/package.json.",
+    "package-lock.json": "Review any dependency change before adopting it in the Codex lock.",
+    "references/app-prototype.md": "Review references/screens.md and the shared frame assets.",
+    "references/modules/miniprogram.md": "Review references/miniprogram.md, the mini schema and its fixtures.",
+    "references/react-setup.md": "Verify the pinned React/Babel versions in html.cjs and the offline fixtures."
+  },
+  "reference_only": ["README.md", "README.en.md", "test-prompts.json"]
+}

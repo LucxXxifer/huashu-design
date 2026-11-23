@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const repo = path.resolve(__dirname, '../..');
-const skill = path.join(repo, 'skills/huashu-design-codex');
+const skill = process.env.HUASHU_TEST_SKILL || path.join(repo, 'skills/huashu-design-codex');
 const cli = path.join(skill, 'scripts/huashu.cjs');
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "huashu-codex-test-"));
 process.env.HUASHU_NODE_MODULES ||= path.join(__dirname, '..', 'node_modules');

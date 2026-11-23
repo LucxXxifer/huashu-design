@@ -26,6 +26,11 @@ test('builds and verifies the actual distributable file set and its content dige
     assert.equal(built.status, 0, built.stderr);
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     assert.ok(manifest.some(file => file.path === 'skills/huashu-design-codex/scripts/huashu.cjs'));
+    assert.ok(manifest.some(file => file.path === 'skills/huashu-design-codex/assets/wechat_frame.jsx'));
+    for (const name of ['package.json', 'package-lock.json']) {
+      const packaged = manifest.find(file => file.path === `runtime/${name}`);
+      assert.equal(packaged?.sha256, createHash('sha256').update(readFileSync(path.join(repo, 'codex', name))).digest('hex'));
+    }
     assert.ok(!manifest.some(file => file.path.includes('UPSTREAM_SKILL.md')));
     const verified = spawnSync(python, [verifier, archive, manifestPath], { encoding: 'utf8', timeout: 10000 });
     assert.ifError(verified.error);

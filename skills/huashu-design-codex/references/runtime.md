@@ -1,6 +1,8 @@
 # 本機驗收工具
 
-從 `SKILL.md` 所在資料夾執行 `node scripts/huashu.cjs <命令> <job.json> <新結果目錄>`。用 Codex workspace dependencies 回傳的 Node（本機實測 24）和 `HUASHU_NODE_MODULES`；若未設定，會查 Node 模組路徑與常見的本機 Codex bundle。瀏覽器需要 Node Playwright＋現有 Chromium；macOS 優先用現有 Chrome，可用 `HUASHU_CHROMIUM` 指定。`deck` 若做 PDF 要有 pdf-lib 和 `pdftotext`，PPTX 另用 pptxgenjs、jszip、xml-js；切片用 Sharp；影片用 FFmpeg、ffprobe。可用 `HUASHU_PDFTOTEXT`、`HUASHU_FFMPEG`、`HUASHU_FFPROBE` 指定各執行檔，缺件時不自動安裝或改權限。
+用 Node.js 24 執行 `node <Skill 路徑>/scripts/huashu.cjs <命令> <job.json> <新結果目錄>`。用發佈 ZIP 的 `runtime/package.json` 和 `runtime/package-lock.json` 在 `~/.local/share/huashu-design-codex/runtime-0.2.0` 安裝對應的鎖定依賴（`npm ci --include=dev --ignore-scripts`），或用 `HUASHU_NODE_MODULES` 指定已備好的 `node_modules`。缺少專用環境時依序查 Node 模組路徑與本機 Codex bundle。瀏覽器使用 Playwright 和本機 Chromium，macOS 優先用 Chrome，可用 `HUASHU_CHROMIUM` 指定。`deck` 的 PDF 需 pdf-lib 和 `pdftotext`，PPTX 用 pptxgenjs、jszip、xml-js，圖片用 Sharp，影片用 FFmpeg、ffprobe。可用 `HUASHU_PDFTOTEXT`、`HUASHU_FFMPEG`、`HUASHU_FFPROBE` 指定執行檔。缺依賴時由 `result.json` 回報。
+
+若預設 `node` 並非 24，用已存在的 Node 24 執行檔路徑（例如 Apple Silicon Homebrew 的 `/opt/homebrew/opt/node@24/bin/node`）。
 
 素材路徑相對於 `job.json`，要放在其資料夾內，禁止跳出或用 symlink 繞過。結果目錄的父層需存在，本身必須新建；舊證據不可混用。用自己創作或已信任的 HTML 及資產：開獨立 Chrome context、沒有登入資料，以離線攔截載入本地資源，外部資源會報錯。已驗證的外部圖／字體／套件先按授權放進專案，不默許 CDN、資料傳出或全域安裝。此步是本地測試工具，不承諾可執行不明來源程式。
 
@@ -12,7 +14,23 @@
 {"file":"index.html","viewports":[[1440,900],[375,812]],"steps":[{"click":"#start"},{"fill":"input","value":"draft"},{"press":"input","key":"Enter"},{"expect":"[role=status]","text":"Saved","screenshot":true},{"reload":true},{"expect":"input","value":"draft"}]}
 ```
 
-`expect` 路徑可加 `attribute`/`equals` 核對狀態；`minFontPx` 預設 12。檢查初始與各指定狀態的溢出、可讀性、缺圖、例外與 console。對簡單純色做文字對比；未量到的透明／背景圖等個案記在 `contrastUnmeasured`，用原畫面判斷。流程只跑你寫下的操作，不推論全站或完整無障礙通過。
+`expect` 路徑可加 `attribute`/`equals` 核對狀態。`minFontPx` 預設 12，SVG 字級計入 `viewBox` 比例。裝置狀態列、原生 tab 等外殼才用 `data-lint-skip`。檢查空白、溢出、缺圖、例外和四台以上等大手機排成一列的提示。用原圖核對 `contrastUnmeasured` 的 SVG、透明與背景圖文字。流程涵蓋 job 中指定的操作。
+
+## mini
+
+```json
+{"file":"board.html","name":"小滿咖啡"}
+```
+
+在 [微信小程序展示板](miniprogram.md) 以 `WechatFrame` 標記每個畫面、用 `WechatShareCard` 標出分享圖。`name` 可省，依序取 `<title>` 和檔名。輸出 750 px 逐屏 PNG、需要時的長圖、分享圖、素材、`tokens.json`、`app.json`、`README.md`、`給WorkBuddy的話.md` 與原稿。用 `checks.miniProgram.findings` 看碰撞、tab 對應、分享比例和素材診斷，按 `artifacts` 查實際文件。缺少分享圖列為警告，需在定稿補齊。交接前逐張核對畫面。
+
+## offline
+
+```json
+{"file":"board.html","viewport":[1440,900],"expectText":"小滿咖啡"}
+```
+
+把鎖定的 React 18.3.1 改為本機資產，將外部或行內的 `text/babel` JSX 預先編譯，嵌入工作目錄內的圖片、字型與樣式。字型若來自 Google Fonts，先依授權取得本地檔並改成 `@font-face` URL。ES Modules、async scripts 和執行後才取用的資料應先寫成能獨立運行的版本。輸出前用只有該檔的隔離資料夾重開並阻斷網路，檢查內容、缺圖、瀏覽器例外和取樣畫面差異。驗證通過才產出 `.offline.html`。另開實際交付檔，試完會延遲載入、換圖或需跨頁狀態的操作。外部連結可保留作來源，連結所指服務仍需連線。
 
 ## deck
 

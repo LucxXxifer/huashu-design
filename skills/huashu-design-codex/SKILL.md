@@ -1,9 +1,10 @@
 ---
 name: huashu-design-codex
-description: Use when the user requests the Codex edition of 花叔設計 / huashu-design for high-fidelity HTML prototypes, decks, infographic or store images, motion design, narrated explainers, or visual critique.
+description: Use when the user requests the Codex edition of 花叔設計 / huashu-design for high-fidelity HTML or WeChat mini-program prototypes, decks, infographic or store images, motion design, narrated explainers, or visual critique.
 metadata:
-  version: "0.1.0"
-  upstream-commit: c4cc21943a8026d2d7aa33bd56b72b5be1926923
+  version: "0.2.0"
+  upstream-version: "3.5.0"
+  upstream-commit: 937113133ae446a69ea19d4ceed6cbd2ed3c7735
 ---
 
 # 花叔設計 · Codex 版
@@ -20,6 +21,8 @@ metadata:
 |---|---|
 | 方向卡、真稿規格、停點、逐屏評審 | [流程與評審](references/workflow.md) |
 | Web、dashboard、App、Tweaks、資訊圖與連續圖／商店圖 | [頁面與圖片](references/screens.md) |
+| 微信小程序原型、展示板與 WorkBuddy 工程交接 | [微信小程序](references/miniprogram.md) |
+| 斷網可開、含素材的單檔 HTML | [離線輸出](references/runtime.md#offline) |
 | HTML Deck、PDF、可編輯或保留外觀的 PPTX | [簡報](references/deck.md) |
 | 短片、長解說、TTS、cue、MP4／GIF | [動態與音訊](references/motion.md) |
 | 本機命令和結果判讀 | [驗收工具](references/runtime.md)；只讀當前命令段 |
@@ -27,4 +30,4 @@ metadata:
 
 用現有專案記錄維持進度。需要釐清需求才用 Cyber SOP；需要工程實作拆解才用 Superpowers，沿用同一份記錄。作者水印、通用配額、全域記憶、外部上傳和安裝不屬於預設交付。
 
-發佈封裝只包含 `scripts/package-files.txt` 列出的 Skill 支援檔與 `README.codex.md`、授權及 Git 教學樣例。修改本檔的發佈內容時，同步更新清單並執行封裝與校驗；不可把測試、上游原版 Skill、鎖檔或 `node_modules` 混入交付包。
+發佈封裝的 Skill 路徑只含 `scripts/package-files.txt` 所列檔案。ZIP 另附 README、授權與專用 Node 依賴的清單及鎖檔。修改發佈內容時，同步更新清單並執行封裝校驗。

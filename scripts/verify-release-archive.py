@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import json
+import re
 import stat
 import sys
 import unicodedata
@@ -128,6 +129,30 @@ def verify(archive_path, manifest_path):
         raise ValueError("Git logo attribution is incomplete")
     if b"Pro Git" not in readme or b"CC BY-NC-SA 3.0" not in readme:
         raise ValueError("Pro Git diagram attribution is incomplete")
+    skill_prefix = "skills/huashu-design-codex/"
+    skill_files = content.get(skill_prefix + "scripts/package-files.txt", b"").decode("utf-8").splitlines()
+    actual_skill_files = {name.removeprefix(skill_prefix) for name in content if name.startswith(skill_prefix)}
+    if len(set(skill_files)) != len(skill_files) or set(skill_files) != actual_skill_files:
+        raise ValueError("package contents differ from the Skill allowlist")
+    runtime_files = {"runtime/package.json", "runtime/package-lock.json"}
+    if runtime_files & set(content) or b"upstream-version:" in skill:
+        if not runtime_files <= set(content):
+            raise ValueError("the dedicated runtime manifest and lock must both be present")
+        package = json.loads(content["runtime/package.json"])
+        lock = json.loads(content["runtime/package-lock.json"])
+        version = re.search(rb'(?m)^  version: "([0-9]+\.[0-9]+\.[0-9]+)"$', skill)
+        if (not version or not isinstance(package, dict) or not isinstance(lock, dict)
+                or not isinstance(lock.get("packages"), dict) or not isinstance(lock["packages"].get(""), dict)):
+            raise ValueError("invalid runtime metadata")
+        root = lock["packages"][""]
+        for key in ("name", "version", "devDependencies", "engines"):
+            if key not in package or package[key] != root.get(key):
+                raise ValueError(f"runtime lock does not match its package {key}")
+        if package["version"] != version.group(1).decode("ascii") or package["name"] != "huashu-design-codex-tests":
+            raise ValueError("the packaged runtime does not match the Codex Skill version")
+    allowed_top_level = {"README.codex.md", "LICENSE.upstream"} | runtime_files
+    if any(name not in allowed_top_level and not name.startswith(skill_prefix) for name in content):
+        raise ValueError("unexpected support file outside the Skill directory")
     forbidden = {"UPSTREAM_SKILL.md", "node_modules"}
     if any(forbidden.intersection(PurePosixPath(name).parts) for name in files):
         raise ValueError("development-only content may not be repackaged")

@@ -17,3 +17,25 @@ test('renders an offline prototype, checks its control, and inspects desktop and
   assert.ok(result.report.checks.viewports.every(view => view.interactions === 3));
   assert.ok(result.report.artifacts.filter(file => file.endsWith('.png')).length >= 4);
 });
+
+test('measures SVG labels at design scale, exempts device chrome and spots a uniform row of phones', async () => {
+  const phone = '<div class="phone"><p data-lint-skip><span>Device chrome</span></p><p>Readable body</p></div>';
+  const html = `<style>body{font:16px Arial} .row{display:flex;gap:12px} .phone{width:190px;height:380px;border-radius:36px;background:#eee;color:#111;text-align:center} [data-lint-skip]{font-size:4px}</style>
+    <section class="row">${phone.repeat(4)}</section>
+    <section style="transform:scale(.45);transform-origin:top left">
+      <svg width="120" height="30" viewBox="0 0 240 60"><text x="2" y="24" font-size="16">Tiny vector label</text></svg>
+      <svg width="120" height="30" viewBox="0 0 60 15"><text x="1" y="12" font-size="8">Large vector label</text></svg>
+    </section>`;
+  const result = await run('web', fixture('web-design-scale', { file: 'index.html', viewports: [[920, 600]] }, { 'index.html': html }));
+  assert.deepEqual(result.report.checks.viewports[0].states[0].small, [{ text: 'Tiny vector label', px: 8 }]);
+  assert.ok(result.report.issues.some(issue => issue.code === 'DEVICE_ROW' && issue.severity === 'warning' && issue.devices === 4));
+});
+
+test('rejects empty render shells and gives a delayed client render a chance to display', async () => {
+  const config = { file: 'index.html', viewports: [[780, 460]] };
+  const blank = await run('web', fixture('web-blank', config, { 'index.html': '<main style="opacity:0">Invisible content</main><svg width="20" height="20"></svg>' }));
+  assert.equal(blank.code, 1);
+  assert.ok(blank.report.issues.some(issue => issue.code === 'PAGE_EMPTY'));
+  const delayed = await run('web', fixture('web-delay', config, { 'index.html': '<main id="root"></main><script>setTimeout(()=>document.querySelector("#root").textContent="Rendered late", 350)</script>' }));
+  assertPassed(delayed);
+});

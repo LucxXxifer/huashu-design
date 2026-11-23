@@ -14,9 +14,11 @@ class Problem extends Error {
 
 function dependency(name) {
   const explicit = process.env.HUASHU_NODE_MODULES;
+  const dedicated = path.join(os.homedir(), '.local/share/huashu-design-codex/runtime-0.2.0/node_modules');
   const bundled = path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules');
   try {
     if (explicit) return require(path.resolve(explicit, name));
+    if (fs.existsSync(dedicated)) return require(path.join(dedicated, name));
     const resolve = createRequire(__filename);
     try { return resolve(name); } catch (error) {
       if (error.code !== 'MODULE_NOT_FOUND') throw error;

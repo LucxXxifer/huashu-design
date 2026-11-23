@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { Problem, dependency, check, size, localFile, tool, scratch, hasText } = require('./runtime.cjs');
-const { withBrowser, openPage } = require('./browser.cjs');
+const { withBrowser, openPage, rendered } = require('./browser.cjs');
 
 async function deck(job) {
   const { config, report, issue, publish, out } = job;
@@ -24,6 +24,7 @@ async function deck(job) {
         try {
           tab = await openPage(browser, job, spec.file, width, height, name);
           await tab.page.emulateMedia({ media: 'screen' });
+          check(await rendered(tab.page), 'No visible text or media appeared on this slide.', 'PAGE_EMPTY');
           const text = await tab.page.locator('body').innerText();
           const missing = spec.text.filter(t => !hasText(text, t));
           check(missing.length === 0, `Missing visible text: ${missing.join(', ')}`, 'HTML_CONTENT');

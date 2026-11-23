@@ -39,13 +39,15 @@ def build(repository, output):
         skill_list = skill / "scripts/package-files.txt"
         skill_files = skill_list.read_text(encoding="utf-8").splitlines()
         if len(set(skill_files)) != len(skill_files) or any(
-            not name.startswith(("scripts/", "references/", "samples/git-desk/"))
+            not name.startswith(("scripts/", "references/", "samples/git-desk/", "assets/"))
             and name not in ("SKILL.md", "LICENSE.upstream") for name in skill_files
         ):
             raise ValueError("Skill package file list contains a duplicate or forbidden path")
         package_sources = [
             (repository / "README.codex.md", "README.codex.md"),
             (skill / "LICENSE.upstream", "LICENSE.upstream"),
+            (repository / "codex/package.json", "runtime/package.json"),
+            (repository / "codex/package-lock.json", "runtime/package-lock.json"),
             *((skill / name, f"skills/huashu-design-codex/{name}") for name in skill_files),
         ]
         for source, relative in package_sources:

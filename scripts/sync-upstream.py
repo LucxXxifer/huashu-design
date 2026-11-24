@@ -256,7 +256,8 @@ def prepare_series(args):
     problems = []
     with tempfile.TemporaryDirectory(prefix='huashu-series-') as temp:
         staged = Path(temp) / 'candidate'
-        shutil.copytree(args.candidate, staged, symlinks=True, ignore=shutil.ignore_patterns('.git'))
+        shutil.copytree(args.candidate, staged, symlinks=True,
+                        ignore=shutil.ignore_patterns('.git', 'node_modules'))
         previous_tag = entries[0]['tag']
         previous_commit = entries[0]['commit']
         for index, entry in enumerate(entries):
@@ -276,7 +277,7 @@ def prepare_series(args):
         status = 'ready' if len(releases) == len(entries) and not problems else 'needs-review'
         if status == 'ready':
             shutil.copytree(staged, args.candidate, symlinks=True, dirs_exist_ok=True,
-                            ignore=shutil.ignore_patterns('.git'))
+                            ignore=shutil.ignore_patterns('.git', 'node_modules'))
     write_series_audit(args.report, releases, status, problems)
     print(f"series through {releases[-1]['upstream']['tag']} · {status} · {len(releases)} release(s)")
 

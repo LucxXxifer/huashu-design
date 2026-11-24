@@ -122,6 +122,9 @@ class UpstreamSyncTest(unittest.TestCase):
         self.assertEqual((self.candidate / SKILL / FRAME).read_text(), self.frame)
 
     def test_series_audits_each_release_and_applies_only_ready_steps(self):
+        installed_bin = self.candidate / 'codex/node_modules/.bin/playwright-core'
+        installed_bin.parent.mkdir(parents=True)
+        installed_bin.symlink_to('../playwright-core/cli.js')
         self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
         self.write('SKILL.md', (self.upstream / 'SKILL.md').read_text().replace('3.5.0', '3.5.1'))
         first = self.commit('first compatible release')
@@ -157,6 +160,8 @@ class UpstreamSyncTest(unittest.TestCase):
         self.assertIn('#abcdef', frame)
         self.assertIn('padding: 24', frame)
         self.assertIn(second, (self.candidate / SKILL / 'references/miniprogram.md').read_text())
+        self.assertTrue(installed_bin.is_symlink())
+        self.assertEqual(os.readlink(installed_bin), '../playwright-core/cli.js')
 
     def test_series_stops_before_publishing_after_unknown_release(self):
         self.write('scripts/new_feature.py', 'raise RuntimeError("this source must never run")\n')

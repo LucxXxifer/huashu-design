@@ -34,6 +34,7 @@ class UpstreamSyncTest(unittest.TestCase):
         self.write('SKILL.md', '---\nname: huashu-design\nmetadata:\n  version: "3.5.0"\n---\n# Stable instructions\n')
         self.write('scripts/mp_handoff.py', 'def pages():\n    return ["pages/home/home"]\n')
         self.base = self.commit('baseline')
+        self.tag('v3.5.0', self.base)
         self.candidate = self.temp / 'candidate'
         self.candidate.mkdir()
         (self.candidate / SKILL / 'assets').mkdir(parents=True)
@@ -59,7 +60,16 @@ class UpstreamSyncTest(unittest.TestCase):
         git(self.upstream, 'commit', '-qm', message)
         return git(self.upstream, 'rev-parse', 'HEAD')
 
+    def tag(self, name, commit):
+        existing = subprocess.run(['git', '-C', str(self.upstream), 'rev-parse', '--verify',
+                                   f'refs/tags/{name}^{{commit}}'], capture_output=True, text=True)
+        if existing.returncode == 0:
+            self.assertEqual(existing.stdout.strip(), commit)
+            return
+        git(self.upstream, 'tag', name, commit)
+
     def prepare(self, commit, version='3.5.1'):
+        self.tag(f'v{version}', commit)
         report = self.temp / 'audit'
         proc = subprocess.run([sys.executable, str(SCRIPT), 'prepare', '--policy', str(self.policy),
                                '--candidate', str(self.candidate), '--upstream', str(self.upstream),
@@ -109,6 +119,122 @@ class UpstreamSyncTest(unittest.TestCase):
         report = self.prepare(self.base, '3.5.0')
         self.assertEqual(report['status'], 'ready')
         self.assertEqual(report['changes'], [])
+        self.assertEqual((self.candidate / SKILL / FRAME).read_text(), self.frame)
+
+    def test_series_audits_each_release_and_applies_only_ready_steps(self):
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
+        self.write('SKILL.md', (self.upstream / 'SKILL.md').read_text().replace('3.5.0', '3.5.1'))
+        first = self.commit('first compatible release')
+        self.tag('v3.5.1', first)
+
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef').replace('padding:20', 'padding:24'))
+        self.write('SKILL.md', (self.upstream / 'SKILL.md').read_text().replace('3.5.1', '3.5.2'))
+        second = self.commit('second compatible release')
+        self.tag('v3.5.2', second)
+
+        series = self.temp / 'series.json'
+        series.write_text(json.dumps([
+            {'tag': 'v3.5.0', 'commit': self.base},
+            {'tag': 'v3.5.1', 'commit': first},
+            {'tag': 'v3.5.2', 'commit': second},
+        ]))
+        report = self.temp / 'series-audit'
+        proc = subprocess.run([
+            sys.executable, str(SCRIPT), 'prepare-series', '--policy', str(self.policy),
+            '--candidate', str(self.candidate), '--upstream', str(self.upstream),
+            '--series', str(series), '--report', str(report),
+        ], env={**os.environ, 'HUASHU_NODE_MODULES': os.environ.get('HUASHU_NODE_MODULES') or str(REPO / 'codex/node_modules')},
+            text=True, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        audit = json.loads((report / 'upstream-audit.json').read_bytes())
+        self.assertEqual(audit['status'], 'ready')
+        self.assertEqual([item['upstream']['tag'] for item in audit['releases']], ['v3.5.0', 'v3.5.1', 'v3.5.2'])
+        self.assertEqual([item['status'] for item in audit['releases']], ['ready', 'ready', 'ready'])
+        self.assertEqual([item['baseline']['tag'] for item in audit['releases']], ['v3.5.0', 'v3.5.0', 'v3.5.1'])
+        self.assertIn('本版比較基準 `v3.5.1`', (report / 'upstream-audit.md').read_text())
+        self.assertEqual(audit['upstream']['commit'], second)
+        frame = (self.candidate / SKILL / FRAME).read_text()
+        self.assertIn('#abcdef', frame)
+        self.assertIn('padding: 24', frame)
+        self.assertIn(second, (self.candidate / SKILL / 'references/miniprogram.md').read_text())
+
+    def test_series_stops_before_publishing_after_unknown_release(self):
+        self.write('scripts/new_feature.py', 'raise RuntimeError("this source must never run")\n')
+        first = self.commit('unknown release')
+        self.tag('v3.5.1', first)
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
+        second = self.commit('later compatible release')
+        self.tag('v3.5.2', second)
+        series = self.temp / 'series.json'
+        series.write_text(json.dumps([
+            {'tag': 'v3.5.0', 'commit': self.base},
+            {'tag': 'v3.5.1', 'commit': first},
+            {'tag': 'v3.5.2', 'commit': second},
+        ]))
+        report = self.temp / 'series-audit'
+        proc = subprocess.run([
+            sys.executable, str(SCRIPT), 'prepare-series', '--policy', str(self.policy),
+            '--candidate', str(self.candidate), '--upstream', str(self.upstream),
+            '--series', str(series), '--report', str(report),
+        ], env={**os.environ, 'HUASHU_NODE_MODULES': os.environ.get('HUASHU_NODE_MODULES') or str(REPO / 'codex/node_modules')},
+            text=True, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        audit = json.loads((report / 'upstream-audit.json').read_bytes())
+        self.assertEqual(audit['status'], 'needs-review')
+        self.assertEqual([item['upstream']['tag'] for item in audit['releases']], ['v3.5.0', 'v3.5.1'])
+        self.assertEqual(audit['releases'][1]['status'], 'needs-review')
+        self.assertEqual((self.candidate / SKILL / FRAME).read_text(), self.frame)
+        self.assertIn('upstream-version: "3.5.0"', (self.candidate / SKILL / 'SKILL.md').read_text())
+
+    def test_series_updates_version_metadata_when_a_release_reuses_its_commit(self):
+        repeated = self.temp / 'series.json'
+        self.tag('v3.5.1', self.base)
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
+        next_commit = self.commit('changed after metadata-only release')
+        self.tag('v3.5.2', next_commit)
+        repeated.write_text(json.dumps([
+            {'tag': 'v3.5.0', 'commit': self.base},
+            {'tag': 'v3.5.1', 'commit': self.base},
+            {'tag': 'v3.5.2', 'commit': next_commit},
+        ]))
+        report = self.temp / 'series-audit'
+        proc = subprocess.run([
+            sys.executable, str(SCRIPT), 'prepare-series', '--policy', str(self.policy),
+            '--candidate', str(self.candidate), '--upstream', str(self.upstream),
+            '--series', str(repeated), '--report', str(report),
+        ], env={**os.environ, 'HUASHU_NODE_MODULES': os.environ.get('HUASHU_NODE_MODULES') or str(REPO / 'codex/node_modules')},
+            text=True, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        audit = json.loads((report / 'upstream-audit.json').read_bytes())
+        self.assertEqual(audit['status'], 'ready')
+        self.assertEqual(audit['releases'][1]['changes'], [])
+        skill = (self.candidate / SKILL / 'SKILL.md').read_text()
+        self.assertIn('upstream-version: "3.5.2"', skill)
+        self.assertIn(next_commit, skill)
+
+    def test_series_rejects_tag_commit_mismatch(self):
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
+        actual = self.commit('release tag target')
+        self.write('different.txt', 'different commit\n')
+        wrong = self.commit('different commit')
+        self.tag('v3.5.1', actual)
+        self.tag('v3.5.2', wrong)
+        series = self.temp / 'wrong-tag.json'
+        series.write_text(json.dumps([
+            {'tag': 'v3.5.0', 'commit': self.base},
+            {'tag': 'v3.5.1', 'commit': wrong},
+        ]))
+        report = self.temp / 'wrong-tag-audit'
+        proc = subprocess.run([
+            sys.executable, str(SCRIPT), 'prepare-series', '--policy', str(self.policy),
+            '--candidate', str(self.candidate), '--upstream', str(self.upstream),
+            '--series', str(series), '--report', str(report),
+        ], env={**os.environ, 'HUASHU_NODE_MODULES': os.environ.get('HUASHU_NODE_MODULES') or str(REPO / 'codex/node_modules')},
+            text=True, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        audit = json.loads((report / 'upstream-audit.json').read_bytes())
+        self.assertEqual(audit['status'], 'needs-review')
+        self.assertIn('tag', audit['releases'][1]['problems'][0].lower())
         self.assertEqual((self.candidate / SKILL / FRAME).read_text(), self.frame)
 
 

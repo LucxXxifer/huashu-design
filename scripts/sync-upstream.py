@@ -7,7 +7,9 @@ import html
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import tempfile
 
 
 SKILL = 'skills/huashu-design-codex'
@@ -156,18 +158,25 @@ def prepare(args):
     policy = json.loads(args.policy.read_bytes())
     if policy.get('schema') != 1:
         raise ValueError('Unsupported compatibility policy schema.')
-    args.base_tag = policy['baseline']['tag']
-    args.base_commit = policy['baseline']['commit']
+    args.base_tag = getattr(args, 'base_tag', None) or policy['baseline']['tag']
+    args.base_commit = getattr(args, 'base_commit', None) or policy['baseline']['commit']
     if not SHA.fullmatch(args.base_commit) or not SHA.fullmatch(args.commit):
         raise ValueError('Expected full Git commit SHA values.')
     base_ver, target_ver = version(args.base_tag), version(args.tag)
     for commit in {args.base_commit, args.commit}:
         if git(args.upstream, 'rev-parse', '--verify', f'{commit}^{{commit}}').strip().decode() != commit:
             raise ValueError('Upstream commit does not resolve to the expected object.')
-    report = {'schema': 1, 'baseline': policy['baseline'], 'upstream': {'tag': args.tag, 'commit': args.commit},
+    report = {'schema': 1, 'baseline': {'tag': args.base_tag, 'commit': args.base_commit},
+              'policy_baseline': policy['baseline'], 'upstream': {'tag': args.tag, 'commit': args.commit},
               'status': 'ready', 'problems': [], 'changes': []}
-    if target_ver < base_ver or (target_ver == base_ver) != (args.commit == args.base_commit):
-        report['problems'].append('The stable tag is older than the baseline, reused at a different commit, or points to the wrong commit.')
+    if target_ver < base_ver or (target_ver == base_ver and args.commit != args.base_commit):
+        report['problems'].append('The stable tag is older than the baseline or the baseline tag points to the wrong commit.')
+    try:
+        tagged = git(args.upstream, 'rev-parse', '--verify', f'refs/tags/{args.tag}^{{commit}}').strip().decode()
+        if tagged != args.commit:
+            report['problems'].append('The stable tag does not resolve to the supplied commit.')
+    except subprocess.CalledProcessError:
+        report['problems'].append('The stable release tag is missing from the upstream Git mirror.')
     raw = git(args.upstream, 'diff', '--name-status', '--no-renames', '--no-ext-diff', '--no-textconv', '-z', args.base_commit, args.commit, '--')
     fields = raw[:-1].decode('utf-8', errors='surrogateescape').split('\0') if raw else []
     copies = {}
@@ -178,11 +187,98 @@ def prepare(args):
             copies[args.candidate / SKILL / name] = code
     if report['problems'] or any(item['decision'] == 'review' for item in report['changes']):
         report['status'] = 'needs-review'
-    elif args.commit != args.base_commit:
+    elif target_ver != base_ver:
         for file, text in (copies | update_metadata(args)).items():
             file.write_text(text, encoding='utf-8')
     write_audit(args.report, report)
     print(f"{args.tag} {args.commit} · {report['status']} · {len(report['changes'])} changed file(s)")
+
+
+def write_series_audit(folder, releases, status, problems):
+    folder.mkdir(parents=True, exist_ok=False)
+    latest = releases[-1]['upstream'] if releases else None
+    report = {
+        'schema': 1,
+        'mode': 'series',
+        'status': status,
+        'problems': problems,
+        'baseline': releases[0]['baseline'] if releases else None,
+        'releases': releases,
+        'upstream': latest,
+    }
+    (folder / 'upstream-audit.json').write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    rows = [
+        '# Huashu 上游逐版相容性檢查', '',
+        f'結果 **{status}**。已處理 {len(releases)} 個穩定版本。', '',
+        '| 版本 | 上游提交 | 結果 | 異動檔 |', '|---|---|---|---:|',
+    ]
+    for item in releases:
+        rows.append('| `{}` | `{}` | **{}** | {} |'.format(
+            item['upstream']['tag'], item['upstream']['commit'], item['status'], len(item['changes'])))
+    for item in releases:
+        rows.extend(['', f"## {item['upstream']['tag']} · `{item['upstream']['commit']}`", '',
+                     f"本版比較基準 `{item['baseline']['tag']}` · `{item['baseline']['commit']}`", '',
+                     '| 檔案 | 處理方式 | 原因及 Codex 對應 |', '|---|---|---|'])
+        for change in item['changes']:
+            path = html.escape(json.dumps(change['path'], ensure_ascii=True)[1:-1]).replace('|', '&#124;')
+            detail = html.escape(change.get('reason', '') + ' ' + change.get('equivalent', '')).strip().replace('|', '&#124;')
+            rows.append(f"| <code>{path}</code> | {change['decision']} | {detail} |")
+    for problem in problems:
+        rows.extend(['', f'- {html.escape(problem)}'])
+    (folder / 'upstream-audit.md').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+
+
+def prepare_series(args):
+    policy = json.loads(args.policy.read_bytes())
+    if policy.get('schema') != 1:
+        raise ValueError('Unsupported compatibility policy schema.')
+    entries = json.loads(args.series.read_bytes())
+    if not isinstance(entries, list) or not entries:
+        raise ValueError('The release series must be a non-empty JSON array.')
+    if len(entries) > 200:
+        raise ValueError('The release series exceeds the 200-release safety bound.')
+    baseline = policy['baseline']
+    if any(not isinstance(entry, dict) for entry in entries):
+        raise ValueError('Every release series entry must be an object.')
+    if entries[0].get('tag') != baseline['tag'] or entries[0].get('commit') != baseline['commit']:
+        raise ValueError('The release series must start at the policy baseline.')
+    previous = None
+    for entry in entries:
+        if not isinstance(entry, dict) or not TAG.fullmatch(entry.get('tag', '')) or not SHA.fullmatch(entry.get('commit', '')):
+            raise ValueError('Every release series entry needs a stable tag and full commit hash.')
+        current = version(entry['tag'])
+        if previous is not None and current <= previous:
+            raise ValueError('Release series entries must be strictly increasing.')
+        previous = current
+
+    releases = []
+    problems = []
+    with tempfile.TemporaryDirectory(prefix='huashu-series-') as temp:
+        staged = Path(temp) / 'candidate'
+        shutil.copytree(args.candidate, staged, symlinks=True, ignore=shutil.ignore_patterns('.git'))
+        previous_tag = entries[0]['tag']
+        previous_commit = entries[0]['commit']
+        for index, entry in enumerate(entries):
+            report_folder = Path(temp) / f'release-{index:04d}'
+            one = argparse.Namespace(policy=args.policy, candidate=staged, upstream=args.upstream,
+                                     report=report_folder, tag=entry['tag'], commit=entry['commit'],
+                                     base_tag=previous_tag, base_commit=previous_commit)
+            prepare(one)
+            result = json.loads((report_folder / 'upstream-audit.json').read_bytes())
+            releases.append(result)
+            if result['status'] != 'ready':
+                problems.append(f"Stopped before publishing at {entry['tag']} because its audit needs review.")
+                break
+            previous_tag = entry['tag']
+            previous_commit = entry['commit']
+
+        status = 'ready' if len(releases) == len(entries) and not problems else 'needs-review'
+        if status == 'ready':
+            shutil.copytree(staged, args.candidate, symlinks=True, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('.git'))
+    write_series_audit(args.report, releases, status, problems)
+    print(f"series through {releases[-1]['upstream']['tag']} · {status} · {len(releases)} release(s)")
 
 
 def main():
@@ -193,9 +289,15 @@ def main():
         command.add_argument(f'--{name}', type=Path, required=True)
     command.add_argument('--tag', required=True)
     command.add_argument('--commit', required=True)
+    series = sub.add_parser('prepare-series')
+    for name in ('policy', 'candidate', 'upstream', 'series', 'report'):
+        series.add_argument(f'--{name}', type=Path, required=True)
     args = parser.parse_args()
     try:
-        prepare(args)
+        if args.command == 'prepare-series':
+            prepare_series(args)
+        else:
+            prepare(args)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f'Upstream check failed: {error}\n')
 

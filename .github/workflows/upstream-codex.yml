@@ -20,62 +20,25 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       upstream: ${{ steps.release.outputs.upstream }}
+      series: ${{ steps.release.outputs.series }}
       adapter: ${{ steps.release.outputs.adapter }}
       release: ${{ steps.release.outputs.release }}
       build: ${{ steps.release.outputs.build }}
     steps:
-      - name: Resolve the official release and Codex source
+      - name: Check out the fixed Codex source for discovery
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/huashu-design-codex-3.5
+          persist-credentials: false
+
+      - name: Resolve and verify every stable release from the adapter baseline
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          ADAPTER_BRANCH: codex/huashu-design-codex-3.5
         shell: python
         run: |
-          import json
-          import os
-          import re
-          from urllib.error import HTTPError
-          from urllib.request import Request, urlopen
-
-          def api(path):
-              request = Request(f'https://api.github.com/{path}', headers={
-                  'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
-                  'Accept': 'application/vnd.github+json',
-              })
-              with urlopen(request, timeout=20) as response:
-                  return json.load(response)
-
-          upstream_repo = 'repos/alchaincyf/huashu-design'
-          repository = f'repos/{os.environ["GITHUB_REPOSITORY"]}'
-          official = api(f'{upstream_repo}/releases/latest')
-          tag = official['tag_name']
-          if official['draft'] or official['prerelease'] or not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
-              raise SystemExit('The upstream Latest release is not a supported stable version.')
-          upstream = api(f'{upstream_repo}/commits/{tag}')['sha']
-          adapter = api(f'{repository}/git/ref/heads/{os.environ["ADAPTER_BRANCH"]}')['object']['sha']
-          if not all(re.fullmatch(r'[0-9a-f]{40}', sha) for sha in (upstream, adapter)):
-              raise SystemExit('GitHub did not return full commit hashes.')
-          release = f'huashu-codex-{tag}-{upstream[:12]}-{adapter[:12]}'
-          try:
-              existing = api(f'{repository}/releases/tags/{release}')
-          except HTTPError as error:
-              if error.code != 404:
-                  raise
-              existing = None
-          if existing:
-              required = {'huashu-design-codex.zip', 'SHA256SUMS', 'PACKAGE-MANIFEST.json', 'upstream-audit.json', 'upstream-audit.md', 'BUILD-PROVENANCE.json'}
-              uploaded = {asset['name'] for asset in existing['assets'] if asset['state'] == 'uploaded' and asset['size'] > 0}
-              if existing['draft'] or existing['prerelease'] or not required <= uploaded:
-                  raise SystemExit('An incomplete Release already holds this tag. Inspect its assets before retrying.')
-              if api(f'{repository}/commits/{release}')['sha'] != adapter:
-                  raise SystemExit('The existing Release tag points to a different Codex commit.')
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              for key, value in dict(tag=tag, upstream=upstream, adapter=adapter, release=release, build=str(existing is None).lower()).items():
-                  output.write(f'{key}={value}\n')
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write(f'Upstream `{tag}` · `{upstream}`\n\nCodex source `{adapter}`\n\n')
-              if existing:
-                  summary.write(f'[{release}]({existing["html_url"]}) already contains the verified bundle.\n')
+          import subprocess
+          subprocess.run(['python3', 'scripts/discover-upstream-series.py'], check=True)
 
   build:
     needs: discover
@@ -88,6 +51,7 @@ jobs:
       UPSTREAM_TAG: ${{ needs.discover.outputs.tag }}
       UPSTREAM_SHA: ${{ needs.discover.outputs.upstream }}
       ADAPTER_SHA: ${{ needs.discover.outputs.adapter }}
+      RELEASE_SERIES: ${{ needs.discover.outputs.series }}
     steps:
       - name: Check out the fixed Codex source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,21 +77,34 @@ jobs:
         id: audit
         env:
           HUASHU_NODE_MODULES: ${{ github.workspace }}/codex/node_modules
+          RELEASE_SERIES: ${{ needs.discover.outputs.series }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$ADAPTER_SHA"
           store="$RUNNER_TEMP/huashu-upstream"
+          printf '%s' "$RELEASE_SERIES" > "$RUNNER_TEMP/huashu-series.json"
           baseline=$(python3 -c 'import json; print(json.load(open("codex/upstream-policy.json"))["baseline"]["commit"])')
-          [[ "$baseline" =~ ^[a-f0-9]{40}$ ]]
+          first=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[0]["commit"])' "$RUNNER_TEMP/huashu-series.json")
+          last=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[-1]["commit"])' "$RUNNER_TEMP/huashu-series.json")
+          test "$first" = "$baseline"
+          test "$last" = "$UPSTREAM_SHA"
           git init --bare --quiet "$store"
-          git -C "$store" fetch --quiet --no-tags --depth=1 https://github.com/alchaincyf/huashu-design.git "+refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
-          test "$(git -C "$store" rev-parse "refs/tags/$UPSTREAM_TAG^{commit}")" = "$UPSTREAM_SHA"
-          if ! git -C "$store" cat-file -e "$baseline^{commit}"; then
-            git -C "$store" fetch --quiet --no-tags --depth=1 https://github.com/alchaincyf/huashu-design.git "$baseline"
-          fi
-          python3 scripts/sync-upstream.py prepare --policy codex/upstream-policy.json \
-            --candidate "$GITHUB_WORKSPACE" --upstream "$store" --tag "$UPSTREAM_TAG" \
-            --commit "$UPSTREAM_SHA" --report "$RUNNER_TEMP/huashu-audit"
+          while IFS= read -r tag_and_sha; do
+            tag=${tag_and_sha%% *}
+            sha=${tag_and_sha#* }
+            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+            git -C "$store" fetch --quiet --no-tags --depth=1 https://github.com/alchaincyf/huashu-design.git "+refs/tags/$tag:refs/tags/$tag"
+            test "$(git -C "$store" rev-parse "refs/tags/$tag^{commit}")" = "$sha"
+          done < <(python3 - "$RUNNER_TEMP/huashu-series.json" <<'PY'
+          import json, sys
+          for entry in json.load(open(sys.argv[1])):
+              print(entry['tag'], entry['commit'])
+          PY
+          )
+          python3 scripts/sync-upstream.py prepare-series --policy codex/upstream-policy.json \
+            --candidate "$GITHUB_WORKSPACE" --upstream "$store" --series "$RUNNER_TEMP/huashu-series.json" \
+            --report "$RUNNER_TEMP/huashu-audit"
           cat "$RUNNER_TEMP/huashu-audit/upstream-audit.md" >> "$GITHUB_STEP_SUMMARY"
           python3 -c 'import json,sys; print("status=" + json.load(open(sys.argv[1]))["status"])' \
             "$RUNNER_TEMP/huashu-audit/upstream-audit.json" >> "$GITHUB_OUTPUT"

@@ -5,6 +5,7 @@ import argparse
 import ast
 import html
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -21,6 +22,129 @@ MAX_BLOB = 1024 * 1024
 
 def git(repo, *args):
     return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, timeout=45).stdout
+
+
+def write_text_atomic(path, text):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=path.parent,
+                                         prefix=f'.{path.name}.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def candidate_files(root):
+    root = Path(root)
+    files, links = {}, {}
+    for directory, names, filenames in os.walk(root, topdown=True, followlinks=False):
+        base = Path(directory)
+        names[:] = [name for name in names if name not in ('.git', 'node_modules')]
+        filenames = [name for name in filenames if name not in ('.git', 'node_modules')]
+        for name in list(names):
+            path = base / name
+            if path.is_symlink():
+                links[path.relative_to(root)] = os.readlink(path)
+                names.remove(name)
+        for name in filenames:
+            path = base / name
+            relative = path.relative_to(root)
+            if path.is_symlink():
+                links[relative] = os.readlink(path)
+            elif path.is_file():
+                files[relative] = path
+    return files, links
+
+
+def commit_candidate(staged, candidate):
+    staged, candidate = Path(staged), Path(candidate)
+    staged_files, staged_links = candidate_files(staged)
+    candidate_files_map, candidate_links = candidate_files(candidate)
+    if staged_links != candidate_links or set(staged_files) != set(candidate_files_map):
+        raise ValueError('The candidate file or symlink layout changed during upstream preparation.')
+
+    prepared, moved = [], []
+    try:
+        for relative, source in staged_files.items():
+            target = candidate / relative
+            if source.read_bytes() == candidate_files_map[relative].read_bytes():
+                continue
+            descriptor, ready_name = tempfile.mkstemp(prefix=f'.{target.name}.candidate-', dir=target.parent)
+            os.close(descriptor)
+            ready = Path(ready_name)
+            backup = None
+            try:
+                shutil.copy2(source, ready)
+                descriptor, backup_name = tempfile.mkstemp(prefix=f'.{target.name}.rollback-', dir=target.parent)
+                os.close(descriptor)
+                backup = Path(backup_name)
+                backup.unlink()
+                prepared.append({'target': target, 'ready': ready, 'backup': backup,
+                                 'moved': False, 'installed': False})
+            except BaseException:
+                ready.unlink(missing_ok=True)
+                if backup is not None:
+                    backup.unlink(missing_ok=True)
+                raise
+
+        for item in prepared:
+            os.replace(item['target'], item['backup'])
+            item['moved'] = True
+            moved.append(item)
+            os.replace(item['ready'], item['target'])
+            item['installed'] = True
+    except BaseException as error:
+        rollback_errors = []
+        for item in reversed(moved):
+            try:
+                if item['installed']:
+                    item['target'].unlink(missing_ok=True)
+                if item['moved']:
+                    os.replace(item['backup'], item['target'])
+                    item['moved'] = False
+            except OSError as rollback_error:
+                rollback_errors.append(f'{item["target"]}: {rollback_error}')
+        for item in prepared:
+            item['ready'].unlink(missing_ok=True)
+            if not item['moved']:
+                item['backup'].unlink(missing_ok=True)
+        if rollback_errors:
+            raise OSError(f'{error}; rollback incomplete: {"; ".join(rollback_errors)}') from error
+        raise
+    else:
+        return prepared
+
+
+def rollback_candidate(prepared):
+    rollback_errors = []
+    for item in reversed(prepared):
+        try:
+            if item['installed']:
+                item['target'].unlink(missing_ok=True)
+            if item['moved']:
+                os.replace(item['backup'], item['target'])
+                item['moved'] = False
+        except OSError as error:
+            rollback_errors.append(f'{item["target"]}: {error}')
+    for item in prepared:
+        item['ready'].unlink(missing_ok=True)
+        if not item['moved']:
+            item['backup'].unlink(missing_ok=True)
+    if rollback_errors:
+        raise OSError('Candidate rollback incomplete: ' + '; '.join(rollback_errors))
+
+
+def finalize_candidate(prepared):
+    for item in prepared:
+        item['backup'].unlink(missing_ok=True)
+        item['ready'].unlink(missing_ok=True)
 
 
 def blob(repo, sha, name):
@@ -136,7 +260,7 @@ def update_metadata(args):
 
 def write_audit(folder, report):
     folder.mkdir(parents=True, exist_ok=False)
-    (folder / 'upstream-audit.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    write_text_atomic(folder / 'upstream-audit.json', json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     rows = [
         '# Huashu 上游相容性檢查', '',
         f"上游 `{report['upstream']['tag']}` · `{report['upstream']['commit']}`",
@@ -151,7 +275,7 @@ def write_audit(folder, report):
             name = html.escape(json.dumps(item['path'], ensure_ascii=True)[1:-1]).replace('|', '&#124;')
             detail = html.escape(item['reason'] + ' ' + item.get('equivalent', '')).strip().replace('|', '&#124;')
             rows.append(f"| <code>{name}</code> | {item['decision']} | {detail} |")
-    (folder / 'upstream-audit.md').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+    write_text_atomic(folder / 'upstream-audit.md', '\n'.join(rows) + '\n')
 
 
 def prepare(args):
@@ -195,7 +319,7 @@ def prepare(args):
 
 
 def write_series_audit(folder, releases, status, problems):
-    folder.mkdir(parents=True, exist_ok=False)
+    folder.mkdir(parents=True, exist_ok=True)
     latest = releases[-1]['upstream'] if releases else None
     report = {
         'schema': 1,
@@ -206,8 +330,7 @@ def write_series_audit(folder, releases, status, problems):
         'releases': releases,
         'upstream': latest,
     }
-    (folder / 'upstream-audit.json').write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    write_text_atomic(folder / 'upstream-audit.json', json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     rows = [
         '# Huashu 上游逐版相容性檢查', '',
         f'結果 **{status}**。已處理 {len(releases)} 個穩定版本。', '',
@@ -226,7 +349,7 @@ def write_series_audit(folder, releases, status, problems):
             rows.append(f"| <code>{path}</code> | {change['decision']} | {detail} |")
     for problem in problems:
         rows.extend(['', f'- {html.escape(problem)}'])
-    (folder / 'upstream-audit.md').write_text('\n'.join(rows) + '\n', encoding='utf-8')
+    write_text_atomic(folder / 'upstream-audit.md', '\n'.join(rows) + '\n')
 
 
 def prepare_series(args):
@@ -254,31 +377,65 @@ def prepare_series(args):
 
     releases = []
     problems = []
+    args.report.mkdir(parents=True, exist_ok=False)
+    transaction = []
     with tempfile.TemporaryDirectory(prefix='huashu-series-') as temp:
         staged = Path(temp) / 'candidate'
-        shutil.copytree(args.candidate, staged, symlinks=True,
-                        ignore=shutil.ignore_patterns('.git', 'node_modules'))
+        try:
+            shutil.copytree(args.candidate, staged, symlinks=True,
+                            ignore=shutil.ignore_patterns('.git', 'node_modules'))
+        except OSError as error:
+            problems.append(f'Could not create the isolated candidate copy: {error}')
+            write_series_audit(args.report, releases, 'needs-review', problems)
+            print(f'series preparation failed · needs-review · {error}')
+            return
+        write_series_audit(args.report, releases, 'in-progress', problems)
         previous_tag = entries[0]['tag']
         previous_commit = entries[0]['commit']
         for index, entry in enumerate(entries):
-            report_folder = Path(temp) / f'release-{index:04d}'
+            report_folder = args.report / 'releases' / f'{index:04d}-{entry["tag"]}'
             one = argparse.Namespace(policy=args.policy, candidate=staged, upstream=args.upstream,
                                      report=report_folder, tag=entry['tag'], commit=entry['commit'],
                                      base_tag=previous_tag, base_commit=previous_commit)
-            prepare(one)
-            result = json.loads((report_folder / 'upstream-audit.json').read_bytes())
+            try:
+                prepare(one)
+                result = json.loads((report_folder / 'upstream-audit.json').read_bytes())
+            except Exception as error:
+                result = {'schema': 1,
+                          'baseline': {'tag': previous_tag, 'commit': previous_commit},
+                          'policy_baseline': policy['baseline'],
+                          'upstream': {'tag': entry['tag'], 'commit': entry['commit']},
+                          'status': 'needs-review',
+                          'problems': [f'Could not complete the per-release audit: {error}'],
+                          'changes': []}
+                if report_folder.exists():
+                    shutil.rmtree(report_folder)
+                write_audit(report_folder, result)
             releases.append(result)
             if result['status'] != 'ready':
                 problems.append(f"Stopped before publishing at {entry['tag']} because its audit needs review.")
+            else:
+                previous_tag = entry['tag']
+                previous_commit = entry['commit']
+            write_series_audit(args.report, releases, 'needs-review' if problems else 'in-progress', problems)
+            if problems:
                 break
-            previous_tag = entry['tag']
-            previous_commit = entry['commit']
 
         status = 'ready' if len(releases) == len(entries) and not problems else 'needs-review'
         if status == 'ready':
-            shutil.copytree(staged, args.candidate, symlinks=True, dirs_exist_ok=True,
-                            ignore=shutil.ignore_patterns('.git', 'node_modules'))
-    write_series_audit(args.report, releases, status, problems)
+            try:
+                transaction = commit_candidate(staged, args.candidate)
+            except (ValueError, OSError) as error:
+                status = 'needs-review'
+                problems.append(f'Could not commit the verified candidate: {error}')
+    try:
+        write_series_audit(args.report, releases, status, problems)
+    except BaseException:
+        if transaction:
+            rollback_candidate(transaction)
+        raise
+    if transaction:
+        finalize_candidate(transaction)
     print(f"series through {releases[-1]['upstream']['tag']} · {status} · {len(releases)} release(s)")
 
 

@@ -1,14 +1,22 @@
 import json
+import argparse
+from contextlib import redirect_stdout
+import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / 'scripts/sync-upstream.py'
+SYNC_SPEC = importlib.util.spec_from_file_location('sync_upstream', SCRIPT)
+SYNC = importlib.util.module_from_spec(SYNC_SPEC)
+SYNC_SPEC.loader.exec_module(SYNC)
 POLICY = REPO / 'codex/upstream-policy.json'
 SKILL = Path('skills/huashu-design-codex')
 BASE = '937113133ae446a69ea19d4ceed6cbd2ed3c7735'
@@ -241,6 +249,90 @@ class UpstreamSyncTest(unittest.TestCase):
         self.assertEqual(audit['status'], 'needs-review')
         self.assertIn('tag', audit['releases'][1]['problems'][0].lower())
         self.assertEqual((self.candidate / SKILL / FRAME).read_text(), self.frame)
+
+    def test_series_keeps_completed_audits_when_a_later_release_raises(self):
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
+        first = self.commit('first compatible release')
+        self.tag('v3.5.1', first)
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef').replace('padding:20', 'padding:24'))
+        second = self.commit('second release')
+        self.tag('v3.5.2', second)
+
+        series = self.temp / 'failure-series.json'
+        series.write_text(json.dumps([
+            {'tag': 'v3.5.0', 'commit': self.base},
+            {'tag': 'v3.5.1', 'commit': first},
+            {'tag': 'v3.5.2', 'commit': second},
+        ]))
+        report = self.temp / 'failure-audit'
+        original_prepare = SYNC.prepare
+        calls = 0
+
+        def fail_later_release(args):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError('injected release audit failure')
+            original_prepare(args)
+
+        args = argparse.Namespace(policy=self.policy, candidate=self.candidate, upstream=self.upstream,
+                                  series=series, report=report)
+        with patch.object(SYNC, 'prepare', side_effect=fail_later_release), redirect_stdout(io.StringIO()):
+            SYNC.prepare_series(args)
+
+        audit = json.loads((report / 'upstream-audit.json').read_bytes())
+        self.assertEqual(audit['status'], 'needs-review')
+        self.assertEqual([item['upstream']['tag'] for item in audit['releases']],
+                         ['v3.5.0', 'v3.5.1', 'v3.5.2'])
+        self.assertEqual([item['status'] for item in audit['releases']],
+                         ['ready', 'ready', 'needs-review'])
+        self.assertIn('injected release audit failure', audit['releases'][2]['problems'][0])
+        self.assertTrue((report / 'releases/0000-v3.5.0/upstream-audit.json').is_file())
+        self.assertTrue((report / 'releases/0001-v3.5.1/upstream-audit.json').is_file())
+        self.assertTrue((report / 'releases/0002-v3.5.2/upstream-audit.json').is_file())
+        self.assertIn('v3.5.2', (report / 'upstream-audit.md').read_text())
+        self.assertEqual((self.candidate / SKILL / FRAME).read_text(), self.frame)
+
+    def test_candidate_remains_unchanged_when_copyback_fails(self):
+        self.write(FRAME, self.frame.replace('#112233', '#abcdef'))
+        self.write('SKILL.md', (self.upstream / 'SKILL.md').read_text().replace('3.5.0', '3.5.1'))
+        release = self.commit('candidate update before injected copyback failure')
+        self.tag('v3.5.1', release)
+        series = self.temp / 'copyback-failure-series.json'
+        series.write_text(json.dumps([
+            {'tag': 'v3.5.0', 'commit': self.base},
+            {'tag': 'v3.5.1', 'commit': release},
+        ]))
+        report = self.temp / 'copyback-failure-audit'
+        original_files = {
+            path.relative_to(self.candidate): path.read_bytes()
+            for path in self.candidate.rglob('*')
+            if path.is_file() and 'node_modules' not in path.parts and '.git' not in path.parts
+        }
+        copies_to_candidate = 0
+        def fail_second_replace(source, destination):
+            nonlocal copies_to_candidate
+            if Path(destination).is_relative_to(self.candidate):
+                copies_to_candidate += 1
+                if copies_to_candidate == 3:
+                    raise OSError('injected candidate copyback failure')
+            return real_replace(source, destination)
+
+        real_replace = os.replace
+        args = argparse.Namespace(policy=self.policy, candidate=self.candidate, upstream=self.upstream,
+                                  series=series, report=report)
+        with patch.object(SYNC.os, 'replace', side_effect=fail_second_replace), redirect_stdout(io.StringIO()):
+            SYNC.prepare_series(args)
+
+        audit = json.loads((report / 'upstream-audit.json').read_bytes())
+        self.assertEqual(audit['status'], 'needs-review')
+        self.assertIn('injected candidate copyback failure', '\n'.join(audit['problems']))
+        self.assertEqual(copies_to_candidate, 4)  # failed second move plus rollback of the first file
+        self.assertEqual(original_files, {
+            path.relative_to(self.candidate): path.read_bytes()
+            for path in self.candidate.rglob('*')
+            if path.is_file() and 'node_modules' not in path.parts and '.git' not in path.parts
+        })
 
 
 if __name__ == '__main__':
